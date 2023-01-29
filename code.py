@@ -5,6 +5,7 @@ import digitalio
 import neopixel
 import usb_midi
 import adafruit_midi
+import rotaryio
 
 from adafruit_midi.note_on import NoteOn
 from adafruit_midi.note_off import NoteOff
@@ -13,6 +14,7 @@ from lcd.lcd import LCD
 from lcd.i2c_pcf8574_interface import I2CPCF8574Interface
 from lcd.lcd import CursorMode
 
+print("starting midiflasher")
 i2c = busio.I2C(scl=board.GP1, sda=board.GP0)
 lcd = LCD(I2CPCF8574Interface(i2c, 0x27), num_rows=2, num_cols=16)
 
@@ -21,60 +23,66 @@ midi = adafruit_midi.MIDI(midi_in=usb_midi.ports[0], midi_out=usb_midi.ports[1])
 led = digitalio.DigitalInOut(board.LED)
 led.direction = digitalio.Direction.OUTPUT
 pixels = neopixel.NeoPixel(board.A1, ledCount, auto_write=False, brightness=1)
+encoder = rotaryio.IncrementalEncoder(board.GP10, board.GP11)
 
-# white + primary, and secondary colors repeated
-palette = [[255, 0, 0],
-           [0, 255, 0],
-           [0, 0, 255],
-           [255, 255, 0],
-           [255, 0, 255],
-           [0, 255, 255],
-           [255, 0, 0],
-           [0, 255, 0],
-           [0, 0, 255],
-           [255, 255, 0],
-           [255, 0, 255],
-           [0, 255, 255],
-           [255, 0, 0],
-           [0, 255, 0],
-           [0, 0, 255]]
+color = {
+    'white': (255, 255, 255),
+    'red': (255, 0, 0),
+    'green': (0, 255, 0),
+    'blue': (0, 0, 255),
+    'yellow': (255, 255, 0),
+    'cyan': (0, 255, 255),
+    'magenta': (255, 0, 255),
+}
 
-# white + primary, and secondary colors repeated
-palette1 = [[255, 255, 255],
-            [255, 0, 0],
-            [0, 255, 0],
-            [0, 0, 255],
-            [255, 255, 0],
-            [255, 0, 255],
-            [0, 255, 255],
-            [255, 0, 0],
-            [0, 255, 0],
-            [0, 0, 255],
-            [255, 255, 0],
-            [255, 0, 255],
-            [0, 255, 255],
-            [255, 0, 0],
-            [0, 255, 0],
-            [0, 0, 255]]
+# 16 colors - # white + primary, and secondary colors repeated
+palette16 = (
+    color['white'],
+    color['red'],
+    color['green'],
+    color['blue'],
+    color['yellow'],
+    color['cyan'],
+    color['magenta'],
+    color['red'],
+    color['green'],
+    color['blue'],
+    color['yellow'],
+    color['cyan'],
+    color['magenta'],
+    color['red'],
+    color['green'],
+    color['blue'],
+)
+
+# 12 colors - primary, and secondary colors repeated
+palette12 = (
+    color['red'],
+    color['green'],
+    color['blue'],
+    color['yellow'],
+    color['cyan'],
+    color['magenta'],
+    color['red'],
+    color['green'],
+    color['blue'],
+    color['yellow'],
+    color['cyan'],
+    color['magenta'],
+)
 
 # major scale notes
-palette2 = [[255, 255, 255],
-            [255, 0, 0],
-            [255, 255, 255],
-            [255, 0, 0],
-            [255, 255, 255],
-            [255, 255, 255],
-            [255, 0, 0],
-            [255, 255, 255],
-            [255, 0, 0],
-            [255, 255, 255],
-            [255, 0, 0],
-            [255, 255, 255]]
+in_key = color['white']
+out_key = color['red']
+palette2 = (
+    in_key, out_key, in_key, out_key, in_key, in_key, out_key, in_key, out_key, in_key, out_key, in_key
+)
 
 noteNames = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
 clock_count = 0
 beat_count = 0
+last_position = None
 
 
 def gamma_adjusted(r, g, b):
@@ -89,11 +97,16 @@ def gamma_adjusted(r, g, b):
                    46, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
                    61, 62, 63, 64, 65, 67, 68, 69, 70, 71, 72, 73, 75, 76, 77, 78,
                    80, 81, 82, 83, 85, 86, 87, 89, 90, 91, 93, 94, 95, 97, 98, 99,
-                   101, 102, 104, 105, 107, 108, 110, 111, 113, 114, 116, 117, 119, 121, 122, 124,
-                   125, 127, 129, 130, 132, 134, 135, 137, 139, 141, 142, 144, 146, 148, 150, 151,
-                   153, 155, 157, 159, 161, 163, 165, 166, 168, 170, 172, 174, 176, 178, 180, 182,
-                   184, 186, 189, 191, 193, 195, 197, 199, 201, 204, 206, 208, 210, 212, 215, 217,
-                   219, 221, 224, 226, 228, 231, 233, 235, 238, 240, 243, 245, 248, 250, 253, 255)
+                   101, 102, 104, 105, 107, 108, 110, 111,
+                   113, 114, 116, 117, 119, 121, 122, 124,
+                   125, 127, 129, 130, 132, 134, 135, 137,
+                   139, 141, 142, 144, 146, 148, 150, 151,
+                   153, 155, 157, 159, 161, 163, 165, 166,
+                   168, 170, 172, 174, 176, 178, 180, 182,
+                   184, 186, 189, 191, 193, 195, 197, 199,
+                   201, 204, 206, 208, 210, 212, 215, 217,
+                   219, 221, 224, 226, 228, 231, 233, 235,
+                   238, 240, 243, 245, 248, 250, 253, 255)
     return gamma_table[r], gamma_table[g], gamma_table[b]
 
 
@@ -120,7 +133,7 @@ def note_color_velocity(note, velocity, channel):
         g = 0
         b = 0
     else:
-        r = int(255 * msg.velocity / 127)
+        r = int(255 * velocity / 127)
         g = 255 - r
         b = 0
     return gamma_adjusted(r, g, b)
@@ -132,10 +145,10 @@ def note_color_channel(note, velocity, channel):
         g = 0
         b = 0
     else:
-        brightness = msg.velocity / 127
-        r = int(palette[channel][0] * brightness)
-        g = int(palette[channel][1] * brightness)
-        b = int(palette[channel][2] * brightness)
+        brightness = velocity / 127
+        r = int(palette16[channel][0] * brightness)
+        g = int(palette16[channel][1] * brightness)
+        b = int(palette16[channel][2] * brightness)
     return gamma_adjusted(r, g, b)
 
 
@@ -145,16 +158,25 @@ def note_color_notes(note, velocity, channel):
         g = 0
         b = 0
     else:
-        brightness = msg.velocity / 127
+        brightness = velocity / 127
         note_number = note % 12
-        r = int(palette[note_number][0] * brightness)
-        g = int(palette[note_number][1] * brightness)
-        b = int(palette[note_number][2] * brightness)
+        r = int(palette12[note_number][0] * brightness)
+        g = int(palette12[note_number][1] * brightness)
+        b = int(palette12[note_number][2] * brightness)
     return gamma_adjusted(r, g, b)
 
 
+lcd.clear()
+lcd.print("midi flasher")
+
 while True:
     msg = midi.receive()
+    # position = encoder.position
+    #
+    # if last_position is None or position != last_position:
+    #     print(position)
+    #     last_position = position
+
     if msg is not None:
         if isinstance(msg, NoteOn):
             # flash the board led
