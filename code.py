@@ -42,15 +42,14 @@ clock_count = 0
 beat_count = 0
 # encoder_previous_position = None
 clock_offset = int((led_count / 2) - 12)  # 24 steps offset from center
+# these two track the position of the metronome pixel
 clock_current_pixel = 0
 clock_previous_pixel = 0
 clock_flag = False
 metronome_palette = palettes.palette_6
-metronome_palette_position = 0
+metronome_palette_index = 0
 metronome_brightness = 128
-
-lcd.clear()
-# lcd.print("midi flasher")
+normalized_brightness = metronome_brightness / 255
 
 
 def note_position(note):
@@ -109,10 +108,43 @@ def note_color_notes(note, velocity, channel):
     return gamma_adjusted((r, g, b))
 
 
+def check_bounds(num, min, max, wrap):
+    if num < min:
+        num = min
+    elif num > max:
+        num = max
+    return num
+
+
+def bounded_increment(num, bound, step, wrap):
+    num += step
+    if num > bound:
+        if wrap:
+            num = 0
+        else:
+            num = bound
+    return num
+
+
+def bounded_decrement(num, bound, step, wrap):
+    num -= step
+    if num < 0:
+        if wrap:
+            num = bound
+        else:
+            num = 0
+    return num
+
+
 knob_current_position = encoder.position
 knob_previous_position = knob_current_position
+metronome_previous_pixels = [(0, 0, 0)] * led_count
+print(metronome_previous_pixels)
+metronome_pixel_color = (128, 0, 0)
 
-lcd.print("Color: " + str(metronome_palette_position))
+# lcd.print("midi flasher")
+lcd.clear()
+lcd.print("Color: " + str(metronome_palette_index))
 
 while True:
     # read the button and set the mode
@@ -127,7 +159,7 @@ while True:
             lcd.clear()
             # lcd.print(metronome_knob_mode)
             if metronome_knob_mode == "color":
-                lcd.print("Color: " + str(metronome_palette_position))
+                lcd.print("Color: " + str(metronome_palette_index))
             elif metronome_knob_mode == "brightness":
                 lcd.print("Brightness: " + str(metronome_brightness))
             elif metronome_knob_mode == "position":
@@ -143,49 +175,38 @@ while True:
     # read the knob and change a value according to the mode
     knob_current_position = encoder.position
     if knob_current_position != knob_previous_position:
-        # lcd.home()
-        # lcd.clear()
         # set the metronome color
         if metronome_knob_mode == "color":
             if knob_current_position > knob_previous_position:
-                metronome_palette_position += 1
-                if metronome_palette_position >= len(metronome_palette):
-                    metronome_palette_position = 0
+                metronome_palette_index = bounded_increment(
+                    metronome_palette_index, len(metronome_palette) - 1, 1, True
+                )
             elif knob_current_position < knob_previous_position:
-                metronome_palette_position -= 1
-                if metronome_palette_position < 0:
-                    metronome_palette_position = len(metronome_palette) - 1
+                metronome_palette_index = bounded_decrement(
+                    metronome_palette_index, len(metronome_palette) - 1, 1, True
+                )
             lcd.set_cursor_pos(0, 7)
-            lcd.print(str(metronome_palette_position))
-            # print(metronome_palette_position)
+            lcd.print(str(metronome_palette_index))
         elif metronome_knob_mode == "brightness":
             if knob_current_position > knob_previous_position:
-                metronome_brightness += 4
-                if metronome_brightness >= 255:
-                    metronome_brightness = 255
+                metronome_brightness = bounded_increment(metronome_brightness, 255, 4, False)
             elif knob_current_position < knob_previous_position:
-                metronome_brightness -= 4
-                if metronome_brightness < 0:
-                    metronome_brightness = 0
+                metronome_brightness = bounded_decrement(metronome_brightness, 255, 4, False)
+            normalized_brightness = metronome_brightness / 255
             lcd.set_cursor_pos(0, 12)
             lcd.print(str(metronome_brightness) + "  ")
-            # print(metronome_brightness)
         elif metronome_knob_mode == "position":
             if knob_current_position > knob_previous_position:
-                clock_offset -= 1
-                if clock_offset < 0:
-                    clock_offset = 0
+                clock_offset = bounded_decrement(clock_offset, led_count - 25, 1, False)
             elif knob_current_position < knob_previous_position:
-                clock_offset += 1
-                if clock_offset + 24 >= led_count:
-                    clock_offset = led_count - 24
+                clock_offset = bounded_increment(clock_offset, led_count - 25, 1, False)
             lcd.set_cursor_pos(0, 10)
             lcd.print(str(clock_offset) + " ")
 
         knob_previous_position = knob_current_position
 
+    # deal with midi messages
     msg = midi.receive()
-
     if msg is not None:
         if isinstance(msg, NoteOn):
             # flash the board led
@@ -195,8 +216,6 @@ while True:
                 led.value = True
             color = note_color_notes(msg.note, msg.velocity, msg.channel)
             pixels[note_position(msg.note)] = (color[0], color[1], color[2])
-            # lcd.clear()
-            # lcd.print(str(msg.note) + ", " + noteNames[msg.note % 12])
         elif isinstance(msg, NoteOff):
             led.value = False
             pixels[note_position(msg.note)] = (0, 0, 0)
@@ -215,7 +234,7 @@ while True:
         elif isinstance(msg, Continue):
             clock_flag = True
         elif isinstance(msg, TimingClock):
-            pixels[clock_previous_pixel] = (0, 0, 0)
+            pixels[clock_previous_pixel] = metronome_previous_pixels[clock_current_pixel]
             odd = True  # used to reverse direction every other beat
             if (beat_count % 2) == 0:
                 odd = False
@@ -229,7 +248,7 @@ while True:
                     else:
                         clock_current_pixel = 0
                     clock_current_pixel += clock_offset
-                    pixels[clock_current_pixel] = (255, 255, 255)
+                    metronome_pixel_color = (255, 255, 255)
                 else:
                     # other clock cycle - move the dot and use alternate color
                     if odd:
@@ -237,13 +256,14 @@ while True:
                     else:
                         clock_current_pixel = 24 - clock_count
                     clock_current_pixel += clock_offset
-                    brightness = metronome_brightness / 255
-                    pixels[clock_current_pixel] = gamma_adjusted(
-                        tuple([int(c * brightness) for c in metronome_palette[metronome_palette_position]])
+                    metronome_pixel_color = gamma_adjusted(
+                        tuple([int(c * normalized_brightness) for c in metronome_palette[metronome_palette_index]])
                     )
+                # store the current pixel color in metronome_previous_pixels
+                metronome_previous_pixels[clock_current_pixel] = pixels[clock_current_pixel]
+                # update the pixel color
+                pixels[clock_current_pixel] = metronome_pixel_color
                 clock_previous_pixel = clock_current_pixel
 
                 # increment clock counter and reset it on the beat
-                clock_count += 1
-                if clock_count == 24:
-                    clock_count = 0
+                clock_count = bounded_increment(clock_count, 24, 1, True)
